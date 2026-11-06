@@ -1,25 +1,131 @@
-name: Coleta Semanal EWGF
+name: Coletar stats do EWGF
 
 on:
+  # Permite executar manualmente pela aba Actions do GitHub.
+  workflow_dispatch:
+
+  # Executa todos os dias às 03:00 UTC.
+  # Ajuste o horário se necessário.
   schedule:
-    - cron: '0 15 * * 5' # Roda toda sexta-feira às 12h00 (horário de Brasília/Macapá, UTC-3)
-  workflow_dispatch:     # Permite testar clicando num botão manual no site do GitHub
+    - cron: "0 3 * * *"
+
+permissions:
+  contents: read
 
 jobs:
-  coletar:
+  coletar-stats:
+    name: Coletar stats dos jogadores
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Baixar arquivos do repositório
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-      - name: Instalar dependências
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Instalar dependências Python
         run: |
-          pip install playwright gspread pandas openpyxl
+          python -m pip install --upgrade pip
+          pip install \
+            pandas \
+            gspread \
+            openpyxl \
+            playwright
+
+      - name: Instalar Chromium do Playwright
+        run: |
           playwright install --with-deps chromium
-      - name: Executar script de recolha
+
+      - name: Criar arquivo temporário de credenciais
         env:
-          CREDENCIAIS_JSON: ${{ secrets.GOOGLE_CREDENTIALS }}
+          GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
         run: |
-          echo "$CREDENCIAIS_JSON" > credenciais.json
-          python coletor_ewgf_completo.py
+          if [ -z "$GOOGLE_CREDENTIALS_JSON" ]; then
+            echo "Erro: o secret GOOGLE_CREDENTIALS_JSON está vazio ou não existe."
+            exit 1
+          fi
+
+          printf '%s' "$GOOGLE_CREDENTIALS_JSON" > credenciais.json
+          chmod 600 credenciais.json
+
+      - name: Validar credenciais sem expor a chave
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          caminho = Path("credenciais.json")
+
+          if not caminho.exists() or caminho.stat().st_size == 0:
+              raise SystemExit("O arquivo credenciais.json não foi criado.")
+
+          with caminho.open(encoding="utf-8") as arquivo:
+              dados = json.load(arquivo)
+
+          campos_obrigatorios = {
+              "type",
+              "project_id",
+              "private_key",
+              "client_email",
+          }
+
+          faltantes = campos_obrigatorios - set(dados)
+
+          if faltantes:
+              raise SystemExit(
+                  "Campos ausentes nas credenciais: "
+                  + ", ".join(sorted(faltantes))
+              )
+
+          if dados.get("type") != "service_account":
+              raise SystemExit(
+                  "O JSON não parece ser uma credencial de service account."
+              )
+
+          print("Credenciais válidas e arquivo criado com sucesso.")
+          print("Projeto configurado:", bool(dados.get("project_id")))
+          print("Conta configurada:", bool(dados.get("client_email")))
+          PY
+
+      - name: Verificar arquivos de entrada
+        run: |
+          test -f tekken_players.xlsx || {
+            echo "Erro: tekken_players.xlsx não foi encontrado na raiz do repositório."
+            exit 1
+          }
+
+          test -f coletor_ewgf_completo_corrigido.py || {
+            echo "Erro: coletor_ewgf_completo_corrigido.py não foi encontrado na raiz do repositório."
+            exit 1
+          }
+
+          echo "Arquivos de entrada encontrados."
+
+      - name: Executar coletor EWGF
+        env:
+          PYTHONUNBUFFERED: "1"
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ github.workspace }}/credenciais.json
+        run: |
+          python coletor_ewgf_completo_corrigido.py
+
+      - name: Enviar diagnósticos para os artefatos do workflow
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-ewgf-${{ github.run_number }}
+          path: debug_ewgf/
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Apagar credenciais temporárias
+        if: always()
+        run: |
+          if command -v shred >/dev/null 2>&1; then
+            shred -u credenciais.json 2>/dev/null || rm -f credenciais.json
+          else
+            rm -f credenciais.json
+          fi
