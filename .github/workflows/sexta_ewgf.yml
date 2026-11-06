@@ -1,0 +1,25 @@
+name: Coleta Semanal EWGF
+
+on:
+  schedule:
+    - cron: '0 15 * * 5' # Roda toda sexta-feira às 12h00 (horário de Brasília/Macapá, UTC-3)
+  workflow_dispatch:     # Permite testar clicando num botão manual no site do GitHub
+
+jobs:
+  coletar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Instalar dependências
+        run: |
+          pip install playwright gspread pandas openpyxl
+          playwright install --with-deps chromium
+      - name: Executar script de recolha
+        env:
+          CREDENCIAIS_JSON: ${{ secrets.GOOGLE_CREDENTIALS }}
+        run: |
+          echo "$CREDENCIAIS_JSON" > credenciais.json
+          python coletor_ewgf_completo.py
