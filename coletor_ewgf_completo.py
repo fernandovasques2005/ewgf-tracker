@@ -8,24 +8,8 @@ ARQUIVO_CREDENCIAIS = "credenciais.json"
 NOME_DA_PLANILHA = "Historico_Stats_EWGF"
 ARQUIVO_EXCEL_JOGADORES = "tekken_players.xlsx"
 
-CATEGORIAS = {
-    "ATTACK": ["Attack Frequency", "Heavy Damage", "Aggressiveness", "Dominance"],
-    "DEFENSE": ["Block", "Evasion", "Throw Escape", "Composure"],
-    "TECHNIQUE": ["Accuracy", "Judgement", "Retaliation", "Stage Use"],
-    "SPIRIT": ["Close Battles", "Comeback", "Fighting Spirit", "Concentration"],
-    "APPEAL": ["Respect", "Ambition", "Fairness", "Versatility"]
-}
-
-SUB_STATS = [stat for subs in CATEGORIAS.values() for stat in subs]
-
-COLUNAS = (
-    ["Data", "Jogador", "Player_ID"] +
-    ["ATTACK"] + CATEGORIAS["ATTACK"] +
-    ["DEFENSE"] + CATEGORIAS["DEFENSE"] +
-    ["TECHNIQUE"] + CATEGORIAS["TECHNIQUE"] +
-    ["SPIRIT"] + CATEGORIAS["SPIRIT"] +
-    ["APPEAL"] + CATEGORIAS["APPEAL"]
-)
+ATRIBUTOS = ["Attack", "Defense", "Technique", "Spirit", "Appeal"]
+COLUNAS = ["Data", "Jogador", "Player_ID"] + ATRIBUTOS
 
 def carregar_jogadores_do_excel(caminho_arquivo):
     df = pd.read_excel(caminho_arquivo, sheet_name="Tekken Players")
@@ -37,40 +21,45 @@ def carregar_jogadores_do_excel(caminho_arquivo):
     return jogadores
 
 def extrair_stats_jogador(page, nome_referencia, tekken_id):
-    id_limpo = tekken_id.replace("-", "").strip()
+    id_limpo = re.sub(r"[^A-Za-z0-9]", "", str(tekken_id).strip())
     url = f"https://ewgf.gg/player/{id_limpo}"
-    print(f"A recolher dados de: {nome_referencia} ({id_limpo})...")
-    
-    # Abre a página e espera a rede acalmar para garantir que o JS executou
-    page.goto(url, wait_until="networkidle", timeout=45000)
-    
-    # Aguarda firmemente o bloco de estatísticas aparecer na tela
-    try:
-        page.wait_for_selector("text=Attack Frequency", timeout=15000)
-    except Exception:
-        print(f"  -> Aviso: Elementos demoraram para {nome_referencia}, a tentar recarregar...")
-        page.reload(wait_until="networkidle", timeout=30000)
-        page.wait_for_selector("text=Attack Frequency", timeout=15000)
-    
-    texto_pagina = page.inner_text("body")
-    
+    print(f"Buscando dados de: {nome_referencia} ({id_limpo})...")
+
+    page.goto(url, wait_until="domcontentloaded", timeout=60000)
+    page.get_by_text("Stat Pentagon", exact=True).wait_for(timeout=20000)
+
+    detalhes = page.get_by_text("Details", exact=True)
+    if not detalhes.count():
+        raise ValueError("A seção Details não foi encontrada no perfil.")
+    detalhes.first.click()
+
+    page.wait_for_function(
+        "() => /\\bAttack\\s+\\d{1,3}\\b/i.test(document.body.innerText)",
+        timeout=10000,
+    )
+
+    texto = page.locator("body").inner_text()
+    inicio = texto.find("Stat Pentagon")
+    fim = texto.find("Global Statistics", inicio)
+    bloco = texto[inicio:fim] if fim > inicio else texto[inicio:inicio + 500]
+
     dados = {
         "Data": datetime.now().strftime("%Y-%m-%d"),
         "Jogador": nome_referencia,
-        "Player_ID": id_limpo
+        "Player_ID": id_limpo,
     }
-    
-    # Extrai cada um dos 20 sub-atributos
-    for stat in SUB_STATS:
-        padrao = rf"{re.escape(stat)}\s+(\d+)\s*/\s*25"
-        match = re.search(padrao, texto_pagina)
-        dados[stat] = int(match.group(1)) if match else 0
 
-    # Soma os 4 sub-atributos de cada secção para obter a nota sobre 100
-    for cat, subs in CATEGORIAS.items():
-        dados[cat] = sum(dados[s] for s in subs)
+    for atributo in ATRIBUTOS:
+        padrao = rf"\b{re.escape(atributo)}\b\s*[:\-]?\s*(\d{{1,3}})\b"
+        match = re.search(padrao, bloco, flags=re.IGNORECASE)
+        if not match:
+            raise ValueError(
+                f"Não encontrei o valor de '{atributo}'. "
+                f"Texto do pentágono encontrado: {bloco!r}"
+            )
+        dados[atributo] = int(match.group(1))
 
-    return [dados[col] for col in COLUNAS]
+    return [dados[coluna] for coluna in COLUNAS]
 
 def salvar_no_google_sheets(linhas_novas):
     gc = gspread.service_account(filename=ARQUIVO_CREDENCIAIS)
