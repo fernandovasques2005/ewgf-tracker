@@ -4,7 +4,6 @@ import pandas as pd
 import gspread
 from playwright.sync_api import sync_playwright
 
-# Configurações do Google Sheets
 ARQUIVO_CREDENCIAIS = "credenciais.json"
 NOME_DA_PLANILHA = "Historico_Stats_EWGF"
 ARQUIVO_EXCEL_JOGADORES = "tekken_players.xlsx"
@@ -29,7 +28,6 @@ COLUNAS = (
 )
 
 def carregar_jogadores_do_excel(caminho_arquivo):
-    """Lê o arquivo Excel enviado e retorna um dicionário {Nick: Tekken_ID}"""
     df = pd.read_excel(caminho_arquivo, sheet_name="Tekken Players")
     jogadores = {}
     for _, row in df.iterrows():
@@ -39,13 +37,18 @@ def carregar_jogadores_do_excel(caminho_arquivo):
     return jogadores
 
 def extrair_stats_jogador(page, nome_referencia, tekken_id):
-    # Remove os hífens do Tekken ID para montar a URL do ewgf.gg
     id_limpo = tekken_id.replace("-", "").strip()
     url = f"https://ewgf.gg/player/{id_limpo}"
-    print(f"A recolher dados de: {nome_referencia} ({id_limpo})...")
+    print(f"A recolher: {nome_referencia} ({id_limpo})")
     
-    page.goto(url, wait_until="networkidle", timeout=60000)
-    page.wait_for_selector("text=Attack Frequency", timeout=15000)
+    # Mudado de networkidle para domcontentloaded (carrega instantaneamente)
+    page.goto(url, wait_until="domcontentloaded", timeout=30000)
+    
+    # Aguarda apenas o elemento crítico aparecer na tela
+    try:
+        page.wait_for_selector("text=Attack Frequency", timeout=10000)
+    except:
+        print(f"  -> Aviso: Elementos demoraram a carregar para {nome_referencia}, a tentar ler mesmo assim...")
     
     texto_pagina = page.inner_text("body")
     
@@ -55,13 +58,11 @@ def extrair_stats_jogador(page, nome_referencia, tekken_id):
         "Player_ID": id_limpo
     }
     
-    # Extrai cada um dos 20 sub-atributos
     for stat in SUB_STATS:
         padrao = rf"{re.escape(stat)}\s+(\d+)\s*/\s*25"
         match = re.search(padrao, texto_pagina)
         dados[stat] = int(match.group(1)) if match else 0
 
-    # Soma os 4 sub-atributos de cada secção para obter a nota sobre 100
     for cat, subs in CATEGORIAS.items():
         dados[cat] = sum(dados[s] for s in subs)
 
@@ -72,7 +73,6 @@ def salvar_no_google_sheets(linhas_novas):
     sh = gc.open(NOME_DA_PLANILHA)
     aba = sh.sheet1
 
-    # Cria o cabeçalho automaticamente caso a folha esteja em branco
     if not aba.row_values(1):
         aba.append_row(COLUNAS, value_input_option="USER_ENTERED")
 
@@ -80,9 +80,8 @@ def salvar_no_google_sheets(linhas_novas):
     print(f"\nSucesso! {len(linhas_novas)} registo(s) guardado(s) na folha '{NOME_DA_PLANILHA}'.")
 
 def main():
-    # Carrega os nicks e IDs do arquivo tekken_players.xlsx
     jogadores = carregar_jogadores_do_excel(ARQUIVO_EXCEL_JOGADORES)
-    print(f"Total de jogadores carregados da planilha: {len(jogadores)}\n")
+    print(f"Total de jogadores na lista: {len(jogadores)}\n")
 
     linhas_para_inserir = []
     
@@ -98,7 +97,7 @@ def main():
                 linha = extrair_stats_jogador(page, nome, tid)
                 linhas_para_inserir.append(linha)
             except Exception as e:
-                print(f"Erro ao recolher {nome} ({tid}): {e}")
+                print(f"  -> Erro ao recolher {nome} ({tid}): {e}")
                 
         browser.close()
 
