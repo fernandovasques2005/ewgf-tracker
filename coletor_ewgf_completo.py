@@ -39,16 +39,18 @@ def carregar_jogadores_do_excel(caminho_arquivo):
 def extrair_stats_jogador(page, nome_referencia, tekken_id):
     id_limpo = tekken_id.replace("-", "").strip()
     url = f"https://ewgf.gg/player/{id_limpo}"
-    print(f"A recolher: {nome_referencia} ({id_limpo})")
+    print(f"A recolher dados de: {nome_referencia} ({id_limpo})...")
     
-    # Mudado de networkidle para domcontentloaded (carrega instantaneamente)
-    page.goto(url, wait_until="domcontentloaded", timeout=30000)
+    # Abre a página e espera a rede acalmar para garantir que o JS executou
+    page.goto(url, wait_until="networkidle", timeout=45000)
     
-    # Aguarda apenas o elemento crítico aparecer na tela
+    # Aguarda firmemente o bloco de estatísticas aparecer na tela
     try:
-        page.wait_for_selector("text=Attack Frequency", timeout=10000)
-    except:
-        print(f"  -> Aviso: Elementos demoraram a carregar para {nome_referencia}, a tentar ler mesmo assim...")
+        page.wait_for_selector("text=Attack Frequency", timeout=15000)
+    except Exception:
+        print(f"  -> Aviso: Elementos demoraram para {nome_referencia}, a tentar recarregar...")
+        page.reload(wait_until="networkidle", timeout=30000)
+        page.wait_for_selector("text=Attack Frequency", timeout=15000)
     
     texto_pagina = page.inner_text("body")
     
@@ -58,11 +60,13 @@ def extrair_stats_jogador(page, nome_referencia, tekken_id):
         "Player_ID": id_limpo
     }
     
+    # Extrai cada um dos 20 sub-atributos
     for stat in SUB_STATS:
         padrao = rf"{re.escape(stat)}\s+(\d+)\s*/\s*25"
         match = re.search(padrao, texto_pagina)
         dados[stat] = int(match.group(1)) if match else 0
 
+    # Soma os 4 sub-atributos de cada secção para obter a nota sobre 100
     for cat, subs in CATEGORIAS.items():
         dados[cat] = sum(dados[s] for s in subs)
 
@@ -81,14 +85,14 @@ def salvar_no_google_sheets(linhas_novas):
 
 def main():
     jogadores = carregar_jogadores_do_excel(ARQUIVO_EXCEL_JOGADORES)
-    print(f"Total de jogadores na lista: {len(jogadores)}\n")
+    print(f"Total de jogadores carregados: {len(jogadores)}\n")
 
     linhas_para_inserir = []
     
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         )
         page = context.new_page()
         
